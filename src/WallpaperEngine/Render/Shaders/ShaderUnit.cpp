@@ -3,6 +3,7 @@
 #include "WallpaperEngine/Logging/Log.h"
 #include <exception>
 #include <regex>
+#include <sstream>
 #include <stack>
 #include <string>
 #include <utility>
@@ -439,14 +440,123 @@ std::string ShaderUnit::applyFragmentTexCoordCompatibility (std::string source) 
     return source;
 }
 
+std::string ShaderUnit::applyImplicitConversionCompatibility (std::string source) const {
+    const std::string original = source;
+
+    // a numeric variable used directly as a ternary condition (outside ? a : b) is an implicit bool conversion
+    const std::regex ternary (R"re(([=(,?:]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*\?))re");
+    std::string result;
+    auto begin = source.cbegin ();
+    std::smatch match;
+
+    while (std::regex_search (begin, source.cend (), match, ternary)) {
+	const std::string name = match[2].str ();
+	const bool numeric = std::regex_search (source, std::regex ("\\b(float|int)\\b[^;(){}]*\\b" + name + "\\b"));
+
+	result.append (begin, match[0].first);
+	result.append (match[1].str ());
+	result.append (numeric ? "bool(" + name + ")" : name);
+	result.append (match[3].str ());
+	begin = match[0].second;
+    }
+
+    result.append (begin, source.cend ());
+    source = result;
+
+    // global constants cannot be initialized from uniforms in GLSL, they are plain globals there
+    const std::regex uniformConst (R"re((^|\n)const(\s+[A-Za-z0-9_]+\s+[A-Za-z_][A-Za-z0-9_]*\s*=[^;\n]*\b[ug]_[A-Za-z0-9_]+[^;\n]*;))re");
+    source = std::regex_replace (source, uniformConst, "$1$2");
+
+    if (source != original) {
+	sLog.out ("Applied implicit conversion compatibility in ", this->m_file);
+    }
+
+    return source;
+}
+
+std::string ShaderUnit::applyVec2TruncationCompatibility (std::string source) const {
+    // Wallpaper Engine's compiler silently truncates a vec4 variable used in a vec2 initializer
+    // (vec2 a = someVec4 * someVec2;), glslang rejects it, so make the swizzle explicit
+    const std::regex vec2Init (R"((\bvec2\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*\*))");
+
+    std::string result;
+    auto begin = source.cbegin ();
+    std::smatch match;
+
+    while (std::regex_search (begin, source.cend (), match, vec2Init)) {
+	result.append (begin, match[0].first);
+	result.append (match[1].str ());
+	result.append (match[2].str ());
+
+	if (std::regex_search (source, std::regex ("\\bvec4\\s+" + match[2].str () + "\\b"))) {
+	    result.append (".xy");
+	}
+
+	result.append (match[3].str ());
+	begin = match[0].second;
+    }
+
+    result.append (begin, source.cend ());
+
+    if (result != source) {
+	sLog.out ("Applied vec2 initializer truncation compatibility in ", this->m_file);
+    }
+
+    return result;
+}
+
+std::string ShaderUnit::applyStrayEndifCompatibility (const std::string& source) const {
+    // Wallpaper Engine ignores an #endif without a matching #if, glslang treats it as an error
+    const std::regex directive (R"(^\s*#\s*(if|ifdef|ifndef|endif)\b)");
+
+    std::istringstream input (source);
+    std::string result, line;
+    int depth = 0;
+    bool changed = false;
+
+    while (std::getline (input, line)) {
+	std::smatch match;
+
+	if (std::regex_search (line, match, directive)) {
+	    if (match[1] == "endif") {
+		if (depth == 0) {
+		    line = "// " + line;
+		    changed = true;
+		} else {
+		    depth--;
+		}
+	    } else {
+		depth++;
+	    }
+	}
+
+	result += line;
+	result += '\n';
+    }
+
+    if (changed) {
+	sLog.out ("Ignored unmatched #endif in ", this->m_file);
+	return result;
+    }
+
+    return source;
+}
+
 void ShaderUnit::parseComboConfiguration (const std::string& content, const int defaultValue) {
     // TODO: SUPPORT REQUIRES SO WE PROPERLY FOLLOW THE REQUIRED CHAIN
     JSON data;
     try {
 	data = JSON::parse (content);
     } catch (const std::exception& e) {
-	sLog.error ("Cannot parse combo metadata in shader ", this->m_file, ": ", e.what ());
-	return;
+	// Wallpaper Engine tolerates a missing opening quote on a key ({Color":0), so retry with those repaired
+	const std::regex missingQuote (R"re(([{,]\s*)([A-Za-z0-9_][^":,{}]*)"(\s*:))re");
+
+	try {
+	    data = JSON::parse (std::regex_replace (content, missingQuote, "$1\"$2\"$3"));
+	} catch (const std::exception&) {
+	    sLog.error ("Cannot parse combo metadata in shader ", this->m_file, ": ", e.what ());
+	    return;
+	}
     }
     const auto combo = data.require<std::string> ("combo", "cannot parse combo information");
     // ignore type as it seems to be used only on the editor
@@ -715,7 +825,9 @@ const std::string& ShaderUnit::compile () {
 
     // this should be the rest of the shader
     this->m_final
-	+= this->applyFragmentTexCoordCompatibility (this->applyLinkedVaryingCompatibility (this->m_preprocessed));
+	+= this->applyFragmentTexCoordCompatibility (
+	    this->applyLinkedVaryingCompatibility (this->applyImplicitConversionCompatibility (
+		this->applyVec2TruncationCompatibility (this->applyStrayEndifCompatibility (this->m_preprocessed)))));
 
     // the pass itself handles shader compilation, the unit doesn't have enough information for this step
     return this->m_final;

@@ -123,6 +123,20 @@ SoundUniquePtr ObjectParser::parseSound (const JSON& it, ObjectData base) {
 }
 
 TextUniquePtr ObjectParser::parseText (const JSON& it, const Project& project, ObjectData base) {
+    // padding is a number in some wallpapers and a "x y" string in others, only the first component is kept
+    int padding = 0;
+    if (const auto value = it.optional ("padding"); value.has_value ()) {
+	if (value->is_number ()) {
+	    padding = value->get<int> ();
+	} else if (value->is_string ()) {
+	    try {
+		padding = static_cast<int> (std::stof (value->get<std::string> ()));
+	    } catch (const std::exception&) {
+		padding = 0;
+	    }
+	}
+    }
+
     return std::make_unique<Text> (
 	std::move (base),
 	TextData {
@@ -136,7 +150,7 @@ TextUniquePtr ObjectParser::parseText (const JSON& it, const Project& project, O
 	    .visible = it.user ("visible", project.properties, true),
 	    .alignment = it.optional ("horizontalalign", it.optional ("alignment", std::string ("center"))),
 	    .verticalalign = it.optional ("verticalalign", std::string ("center")),
-	    .padding = it.optional ("padding", 0),
+	    .padding = padding,
 	}
     );
 }
