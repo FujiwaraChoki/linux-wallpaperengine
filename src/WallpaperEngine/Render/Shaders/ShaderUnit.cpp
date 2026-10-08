@@ -440,6 +440,58 @@ std::string ShaderUnit::applyFragmentTexCoordCompatibility (std::string source) 
     return source;
 }
 
+std::string ShaderUnit::applyWritableTexCoordCompatibility (std::string source) const {
+    if (this->m_type != GLSLContext::UnitType_Fragment) {
+	return source;
+    }
+
+    // Wallpaper Engine lets a fragment shader modify its varyings and declare them narrower than the vertex shader
+    // does, GLSL does neither: work on a local copy of the declared size instead
+    const std::regex declaration (R"re(\bvarying\s+(vec[234])\s+v_TexCoord\s*;)re");
+    const std::regex assignment (R"re(\bv_TexCoord(\.[xyzw]{1,4})?\s*([-+*/]?=)(?!=))re");
+    const std::regex entry (R"re(void\s+main\s*\(\s*(void)?\s*\)\s*\{)re");
+
+    std::smatch declMatch;
+    if (!std::regex_search (source, declMatch, declaration)) {
+	return source;
+    }
+
+    const std::string type = declMatch[1].str ();
+    std::string inputType = type;
+
+    if (this->m_link != nullptr) {
+	std::smatch linkedMatch;
+	if (std::regex_search (this->m_link->m_preprocessed, linkedMatch, declaration)
+	    && linkedMatch[1].str () > type) {
+	    inputType = linkedMatch[1].str ();
+	}
+    }
+
+    if (inputType == type && !std::regex_search (source, assignment)) {
+	return source;
+    }
+
+    const std::string before = source.substr (0, declMatch.position (0));
+    std::string after = source.substr (declMatch.position (0) + declMatch.length (0));
+
+    after = std::regex_replace (after, std::regex (R"re(\bv_TexCoord\b)re"), "v_TexCoordLocal");
+
+    std::smatch mainMatch;
+    if (!std::regex_search (after, mainMatch, entry)) {
+	return source;
+    }
+
+    const std::string swizzle = std::string (".xyzw").substr (0, type.back () - '0' + 1);
+    const std::string copy = inputType == type ? "" : swizzle;
+
+    after.insert (mainMatch.position (0) + mainMatch.length (0), "\n    v_TexCoordLocal = v_TexCoord" + copy + ";\n");
+    after.insert (mainMatch.position (0), type + " v_TexCoordLocal;\n");
+
+    sLog.out ("Applied writable TexCoord compatibility in ", this->m_file);
+
+    return before + "varying " + inputType + " v_TexCoord;" + after;
+}
+
 std::string ShaderUnit::applyImplicitConversionCompatibility (std::string source) const {
     const std::string original = source;
 
@@ -477,7 +529,7 @@ std::string ShaderUnit::applyImplicitConversionCompatibility (std::string source
 std::string ShaderUnit::applyVec2TruncationCompatibility (std::string source) const {
     // Wallpaper Engine's compiler silently truncates a vec4 variable used in a vec2 initializer
     // (vec2 a = someVec4 * someVec2;), glslang rejects it, so make the swizzle explicit
-    const std::regex vec2Init (R"((\bvec2\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*\*))");
+    const std::regex vec2Init (R"((\bvec2\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*[*;]))");
 
     std::string result;
     auto begin = source.cbegin ();
@@ -488,7 +540,7 @@ std::string ShaderUnit::applyVec2TruncationCompatibility (std::string source) co
 	result.append (match[1].str ());
 	result.append (match[2].str ());
 
-	if (std::regex_search (source, std::regex ("\\bvec4\\s+" + match[2].str () + "\\b"))) {
+	if (std::regex_search (source, std::regex ("\\bvec[34]\\s+" + match[2].str () + "\\b"))) {
 	    result.append (".xy");
 	}
 
@@ -826,8 +878,9 @@ const std::string& ShaderUnit::compile () {
     // this should be the rest of the shader
     this->m_final
 	+= this->applyFragmentTexCoordCompatibility (
-	    this->applyLinkedVaryingCompatibility (this->applyImplicitConversionCompatibility (
-		this->applyVec2TruncationCompatibility (this->applyStrayEndifCompatibility (this->m_preprocessed)))));
+	    this->applyLinkedVaryingCompatibility (this->applyWritableTexCoordCompatibility (
+		this->applyImplicitConversionCompatibility (
+		    this->applyVec2TruncationCompatibility (this->applyStrayEndifCompatibility (this->m_preprocessed))))));
 
     // the pass itself handles shader compilation, the unit doesn't have enough information for this step
     return this->m_final;
