@@ -23,6 +23,8 @@ public:
     [[nodiscard]] const AssetLocator& getAssetLocator () const;
     [[nodiscard]] int getId () const;
     [[nodiscard]] const Object& getObject () const;
+    /** Whether any parent group of this object is hidden, hiding a group hides everything under it */
+    [[nodiscard]] bool hasHiddenAncestor () const;
 
 private:
     Wallpapers::CScene& m_scene;

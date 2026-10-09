@@ -170,7 +170,7 @@ void CParticle::setup () {
 }
 
 void CParticle::render () {
-    if (!m_initialized || !m_particle.visible->value->getBool ()) {
+    if (!m_initialized || !m_particle.visible->value->getBool () || this->hasHiddenAncestor ()) {
 	return;
     }
 

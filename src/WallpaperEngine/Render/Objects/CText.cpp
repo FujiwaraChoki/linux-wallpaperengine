@@ -374,7 +374,7 @@ void CText::render () {
     if (!m_valid) {
 	return;
     }
-    if (!m_text.visible->value->getBool ()) {
+    if (!m_text.visible->value->getBool () || this->hasHiddenAncestor ()) {
 	return;
     }
 

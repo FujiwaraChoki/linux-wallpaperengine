@@ -912,7 +912,7 @@ void CImage::render () {
 	return;
     }
 
-    if (!this->getImage ().visible->value->getBool ()) {
+    if (!this->getImage ().visible->value->getBool () || this->hasHiddenAncestor ()) {
 	return;
     }
 
